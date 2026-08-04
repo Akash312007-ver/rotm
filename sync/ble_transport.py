@@ -16,6 +16,10 @@ import threading
 from typing import Optional, Tuple, List, Dict, Any, Callable
 from dataclasses import dataclass, field
 
+from core.transaction import Transaction, Wallet
+from sync.ledger import Ledger
+from detection.risk_scorer import LocalLLMRiskScorer, RiskAssessment
+
 try:
     from bleak import BleakServer, BleakClient
     BLE_AVAILABLE = True
