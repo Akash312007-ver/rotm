@@ -2,10 +2,16 @@
 Tests for BLE transport layer including chunking/reassembly logic and simulation mode.
 """
 
+import sys
+import os
 import unittest
 import json
 import time
 import threading
+
+# Add project root to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from sync.ble_transport import (
     BLEMessageAssembler, BLETransportSimulator, BLEDeviceNode,
     BLEMessageChunk, BLETransportError, BLE_MAX_PACKET_SIZE
