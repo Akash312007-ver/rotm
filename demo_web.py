@@ -152,8 +152,11 @@ def api_risk_assessment():
     try:
         alice = state["alice"]
         bob = state["bob"]
-        # Build a sample "unusual" transaction to score.
-        sample = alice.create_transaction(bob.pubkey_hex, 180_000)  # large, near cap
+        # Build a sample transaction to score, adapting to the wallet's
+        # remaining offline cap so the demo stays realistic.
+        remaining_cap = alice.offline_cap_paise - alice.offline_spent_paise
+        safe_amount = min(10_000, max(remaining_cap - 1_000, 1_000))
+        sample = alice.create_transaction(bob.pubkey_hex, safe_amount)
         assessment = state["risk_scorer"].assess(
             sample,
             offline_cap_paise=alice.offline_cap_paise,
