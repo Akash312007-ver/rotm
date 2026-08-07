@@ -38,15 +38,17 @@ class LedgerEntry:
     hop_count: int = 0  # incremented each time this txn is relayed device-to-device
 
 
-@dataclass
 class RelayReputation:
     """Tracks a relay peer's reputation for Sybil-resistance (see
     docs/PROTOCOL.md Section 8). Score starts neutral, decays sharply on
     detected withholding, recovers gradually on good behavior."""
-    score: float = 1.0
+    def __init__(self, score: float = 1.0):
+        self.score = score
+        self.last_penalty_time: Optional[float] = None
 
     def penalize(self, penalty: float = 0.3) -> None:
         self.score = max(0.0, self.score - penalty)
+        self.last_penalty_time = time.time()
 
     def reward(self, reward: float = 0.1) -> None:
         self.score = min(1.0, self.score + reward)
@@ -241,3 +243,13 @@ class Ledger:
         if total_attempts == 0:
             return 0.0
         return len(self.conflicts) / total_attempts
+
+    def decay_stale_reputations(self, current_time: float, half_life_seconds: float = 3600) -> None:
+        """Decay the reputation scores of relays that have been penalized, based on time elapsed since last penalty.
+        The score recovers towards 1.0 exponentially with the given half-life.
+        """
+        for reputation in self.relay_reputations.values():
+            if reputation.last_penalty_time is not None:
+                elapsed = current_time - reputation.last_penalty_time
+                decay_factor = 1 - 0.5 ** (elapsed / half_life_seconds)
+                reputation.score = min(1.0, reputation.score + (1.0 - reputation.score) * decay_factor)
