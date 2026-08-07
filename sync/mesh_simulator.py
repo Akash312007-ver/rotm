@@ -44,8 +44,8 @@ class SybilSimResult:
     n_sybil_relays: int
     withholding_rate: float
     total_transactions: int
-    total_conflicts: int
-    conflict_rate: float
+    total_conflict_detections: int
+    unique_conflicts_estimate: int
     sybil_resistance_stats: dict = field(default_factory=dict)
 
 
@@ -189,7 +189,7 @@ def run_sybil_resistance_simulation(
     # Select Sybil relay nodes
     sybil_relay_idx = set(random.sample(range(n_nodes), min(n_sybil_relays, n_nodes)))
 
-    total_conflicts = 0
+    total_conflict_detections = 0
     total_txns = 0
 
     for _ in range(rounds):
@@ -236,7 +236,7 @@ def run_sybil_resistance_simulation(
             # Perform merge with potential withholding
             if not a_withholds:
                 conflicts = ledgers[a].merge(ledgers[b], relay_pub=wallets[b].pubkey_hex)
-                total_conflicts += len(conflicts)
+                total_conflict_detections += len(conflicts)
             else:
                 # Sybil relay withholds - don't merge
                 pass
@@ -246,6 +246,14 @@ def run_sybil_resistance_simulation(
             else:
                 # Sybil relay withholds - don't merge
                 pass
+
+    # Deduplicate conflicts by counting distinct sender_pub+rejected_txn_id pairs
+    # across all ledgers' conflict lists
+    unique_conflict_keys = set()
+    for ledger in ledgers:
+        for conflict in ledger.conflicts:
+            unique_conflict_keys.add((conflict.sender_pub, conflict.rejected_txn_id))
+    unique_conflicts_estimate = len(unique_conflict_keys)
 
     # Aggregate Sybil resistance stats from all ledgers
     sybil_stats = {}
@@ -267,8 +275,8 @@ def run_sybil_resistance_simulation(
         n_sybil_relays=n_sybil_relays,
         withholding_rate=withholding_rate,
         total_transactions=total_txns,
-        total_conflicts=total_conflicts,
-        conflict_rate=(total_conflicts / total_txns) if total_txns else 0.0,
+        total_conflict_detections=total_conflict_detections,
+        unique_conflicts_estimate=unique_conflicts_estimate,
         sybil_resistance_stats=avg_sybil_stats,
     )
 
