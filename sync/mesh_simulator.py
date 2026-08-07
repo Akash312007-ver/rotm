@@ -256,6 +256,12 @@ def run_sybil_resistance_simulation(
     unique_conflicts_estimate = len(unique_conflict_keys)
 
     # Aggregate Sybil resistance stats from all ledgers
+    # Note: diversity_warnings is always 0 because get_diversity_warning() is never
+    # called during the simulation. Warnings are generated on-demand when explicitly
+    # queried, not automatically during transaction processing. This is expected
+    # behavior - the warning system is designed to be queried by applications
+    # when they need to display alerts to users, not to accumulate during normal
+    # operation.
     sybil_stats = {}
     for ledger in ledgers:
         stats = ledger.get_sybil_resistance_stats()
@@ -264,11 +270,19 @@ def run_sybil_resistance_simulation(
                 sybil_stats[key] = []
             sybil_stats[key].append(value)
     
-    # Average the stats
+    # For relay_count, we need to count distinct relay identities across all ledgers,
+    # not average per-ledger counts (which produces fractional values)
+    all_relay_pubs = set()
+    for ledger in ledgers:
+        all_relay_pubs.update(ledger.relay_reputations.keys())
+    
+    # Average the other stats
     avg_sybil_stats = {
         key: statistics.mean(values) if values else 0.0
         for key, values in sybil_stats.items()
     }
+    # Override relay_count with the correct whole-number count of distinct relays
+    avg_sybil_stats["relay_count"] = len(all_relay_pubs)
 
     return SybilSimResult(
         n_nodes=n_nodes,
@@ -279,6 +293,45 @@ def run_sybil_resistance_simulation(
         unique_conflicts_estimate=unique_conflicts_estimate,
         sybil_resistance_stats=avg_sybil_stats,
     )
+
+
+def run_sybil_resistance_sweep():
+    """Runs run_sybil_resistance_simulation() across withholding_rate values
+    [0.1, 0.2, 0.3, 0.4, 0.5] with n_sybil_relays=5, and writes real captured
+    output to results/week5_sybil_resistance.md."""
+    withholding_rates = [0.1, 0.2, 0.3, 0.4, 0.5]
+    results = []
+    
+    for rate in withholding_rates:
+        result = run_sybil_resistance_simulation(
+            n_nodes=20,
+            n_sybil_relays=5,
+            withholding_rate=rate,
+            rounds=40,
+            meetings_per_round=10,
+            starting_balance_paise=500_000,
+            seed=42,
+        )
+        results.append(result)
+    
+    # Write results to markdown file
+    with open("results/week5_sybil_resistance.md", "w") as f:
+        f.write("# Sybil Resistance Simulation Results\n\n")
+        f.write("## Withholding Rate Sweep (n_sybil_relays=5, n_nodes=20, rounds=40)\n\n")
+        f.write("| Withholding Rate | Total Transactions | Conflict Detections | Unique Conflicts | Relay Count | Avg Reputation | Network Trust Score | Max Single Relay Influence |\n")
+        f.write("|------------------|--------------------|---------------------|------------------|-------------|----------------|---------------------|----------------------------|\n")
+        for result in results:
+            stats = result.sybil_resistance_stats
+            f.write(f"| {result.withholding_rate} | {result.total_transactions} | {result.total_conflict_detections} | {result.unique_conflicts_estimate} | {stats['relay_count']} | {stats['avg_reputation']:.4f} | {stats['network_trust_score']:.4f} | {stats['max_single_relay_influence']:.4f} |\n")
+    
+    # Print summary to stdout
+    print("Sybil resistance sweep complete. Results written to results/week5_sybil_resistance.md")
+    print("\nSummary:")
+    print(f"{'Rate':>6} | {'Txns':>6} | {'Detections':>10} | {'Unique':>7} | {'Relays':>7} | {'AvgRep':>7} | {'Trust':>7} | {'MaxInfl':>7}")
+    print("-" * 75)
+    for result in results:
+        stats = result.sybil_resistance_stats
+        print(f"{result.withholding_rate:>6.1f} | {result.total_transactions:>6} | {result.total_conflict_detections:>10} | {result.unique_conflicts_estimate:>7} | {stats['relay_count']:>7} | {stats['avg_reputation']:>7.4f} | {stats['network_trust_score']:>7.4f} | {stats['max_single_relay_influence']:>7.4f}")
 
 
 def run_cap_sensitivity_sweep():
