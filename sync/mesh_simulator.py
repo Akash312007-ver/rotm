@@ -6,6 +6,7 @@ range) and merging ledgers. Produces the benchmark data your paper needs:
   - detection latency (hops / simulated time) vs. offline cap size
   - conflict rate vs. % of malicious/double-spending nodes
   - throughput (txns/sec) under varying mesh density
+  - Sybil resistance effectiveness vs. relay withholding attacks
 
 This is a discrete-event simulation, not a real Bluetooth stack -- appropriate
 for a research prototype's evaluation section. Real device-to-device transport
@@ -34,6 +35,18 @@ class SimResult:
     conflict_rate: float
     avg_hops_to_detect: float
     max_hops_to_detect: int
+    sybil_resistance_stats: dict = field(default_factory=dict)
+
+
+@dataclass
+class SybilSimResult:
+    n_nodes: int
+    n_sybil_relays: int
+    withholding_rate: float
+    total_transactions: int
+    total_conflicts: int
+    conflict_rate: float
+    sybil_resistance_stats: dict = field(default_factory=dict)
 
 
 def run_mesh_simulation(
@@ -104,12 +117,31 @@ def run_mesh_simulation(
         # Simulate pairwise mesh "meetings" -- devices in Bluetooth range sync ledgers.
         for _ in range(meetings_per_round):
             a, b = random.sample(range(n_nodes), 2)
-            conflicts = ledgers[a].merge(ledgers[b])
+            # Register both nodes as relays for each other
+            ledgers[a].register_relay(wallets[b].pubkey_hex)
+            ledgers[b].register_relay(wallets[a].pubkey_hex)
+            
+            conflicts = ledgers[a].merge(ledgers[b], relay_pub=wallets[b].pubkey_hex)
             total_conflicts += len(conflicts)
             # After meeting, b also gets a's view (bidirectional sync).
-            ledgers[b].merge(ledgers[a])
+            ledgers[b].merge(ledgers[a], relay_pub=wallets[a].pubkey_hex)
 
     all_hops = [c.hops_to_detect for ledger in ledgers for c in ledger.conflicts]
+
+    # Aggregate Sybil resistance stats from all ledgers
+    sybil_stats = {}
+    for ledger in ledgers:
+        stats = ledger.get_sybil_resistance_stats()
+        for key, value in stats.items():
+            if key not in sybil_stats:
+                sybil_stats[key] = []
+            sybil_stats[key].append(value)
+    
+    # Average the stats
+    avg_sybil_stats = {
+        key: statistics.mean(values) if values else 0.0
+        for key, values in sybil_stats.items()
+    }
 
     return SimResult(
         n_nodes=n_nodes,
@@ -120,6 +152,124 @@ def run_mesh_simulation(
         conflict_rate=(total_conflicts / total_txns) if total_txns else 0.0,
         avg_hops_to_detect=statistics.mean(all_hops) if all_hops else 0.0,
         max_hops_to_detect=max(all_hops) if all_hops else 0,
+        sybil_resistance_stats=avg_sybil_stats,
+    )
+
+
+def run_sybil_resistance_simulation(
+    n_nodes: int = 20,
+    n_sybil_relays: int = 5,
+    withholding_rate: float = 0.3,
+    rounds: int = 40,
+    meetings_per_round: int = 10,
+    starting_balance_paise: int = 500_000,
+    seed: int = 42,
+) -> SybilSimResult:
+    """
+    Simulates Sybil relay attacks where malicious relays selectively withhold
+    transactions to delay conflict detection.
+    
+    n_nodes: total phones in the mesh
+    n_sybil_relays: how many nodes act as malicious relays (withholding transactions)
+    withholding_rate: probability that a Sybil relay withholds a transaction
+    rounds: simulated time steps
+    meetings_per_round: how many pairwise device "encounters" happen per round
+    """
+    random.seed(seed)
+
+    wallets = [Wallet(offline_cap_paise=200_000) for _ in range(n_nodes)]
+    for w in wallets:
+        w.fund(starting_balance_paise)
+
+    ledgers = [Ledger() for _ in range(n_nodes)]
+    for i, ledger in enumerate(ledgers):
+        for w in wallets:
+            ledger.set_known_balance(w.pubkey_hex, starting_balance_paise)
+
+    # Select Sybil relay nodes
+    sybil_relay_idx = set(random.sample(range(n_nodes), min(n_sybil_relays, n_nodes)))
+
+    total_conflicts = 0
+    total_txns = 0
+
+    for _ in range(rounds):
+        # Each node may create a transaction to a random peer this round.
+        for i, wallet in enumerate(wallets):
+            if random.random() < 0.4:  # 40% chance a node transacts this round
+                recipient = random.choice([w for j, w in enumerate(wallets) if j != i])
+                amount = random.randint(1_000, min(20_000, max(wallet.balance_paise, 1_000)))
+                try:
+                    txn = wallet.create_transaction(recipient.pubkey_hex, amount)
+                    ledgers[i].submit(txn)
+                    total_txns += 1
+
+                    # Simulate double-spend attack
+                    if random.random() < 0.3:  # 30% chance of double-spend attempt
+                        wallet.balance_paise += amount
+                        wallet.nonce -= 1
+                        other_recipient_idx = random.choice(
+                            [j for j in range(n_nodes) if j != i and wallets[j] != recipient]
+                        )
+                        other_recipient = wallets[other_recipient_idx]
+                        dupe_txn = wallet.create_transaction(other_recipient.pubkey_hex, amount)
+                        ledgers[other_recipient_idx].submit(dupe_txn)
+                        total_txns += 1
+                except Exception:
+                    continue
+
+        # Simulate pairwise mesh "meetings" with Sybil relay behavior
+        for _ in range(meetings_per_round):
+            a, b = random.sample(range(n_nodes), 2)
+            
+            # Register both nodes as relays for each other
+            ledgers[a].register_relay(wallets[b].pubkey_hex)
+            ledgers[b].register_relay(wallets[a].pubkey_hex)
+            
+            # Check if either node is a Sybil relay
+            a_is_sybil = a in sybil_relay_idx
+            b_is_sybil = b in sybil_relay_idx
+            
+            # Determine if relays will withhold transactions
+            a_withholds = a_is_sybil and random.random() < withholding_rate
+            b_withholds = b_is_sybil and random.random() < withholding_rate
+            
+            # Perform merge with potential withholding
+            if not a_withholds:
+                conflicts = ledgers[a].merge(ledgers[b], relay_pub=wallets[b].pubkey_hex)
+                total_conflicts += len(conflicts)
+            else:
+                # Sybil relay withholds - don't merge
+                pass
+            
+            if not b_withholds:
+                ledgers[b].merge(ledgers[a], relay_pub=wallets[a].pubkey_hex)
+            else:
+                # Sybil relay withholds - don't merge
+                pass
+
+    # Aggregate Sybil resistance stats from all ledgers
+    sybil_stats = {}
+    for ledger in ledgers:
+        stats = ledger.get_sybil_resistance_stats()
+        for key, value in stats.items():
+            if key not in sybil_stats:
+                sybil_stats[key] = []
+            sybil_stats[key].append(value)
+    
+    # Average the stats
+    avg_sybil_stats = {
+        key: statistics.mean(values) if values else 0.0
+        for key, values in sybil_stats.items()
+    }
+
+    return SybilSimResult(
+        n_nodes=n_nodes,
+        n_sybil_relays=n_sybil_relays,
+        withholding_rate=withholding_rate,
+        total_transactions=total_txns,
+        total_conflicts=total_conflicts,
+        conflict_rate=(total_conflicts / total_txns) if total_txns else 0.0,
+        sybil_resistance_stats=avg_sybil_stats,
     )
 
 

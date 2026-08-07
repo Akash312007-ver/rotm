@@ -79,3 +79,4 @@ wallet_state.json
 *~
 .DS_Store
 Thumbs.db
+.aider*

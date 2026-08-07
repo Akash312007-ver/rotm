@@ -141,10 +141,9 @@ sensitivity sweep.
 
 ## 6. Known Limitations / Future Work
 
-- **Sybil resistance at the mesh relay layer** is not addressed -- a
-  malicious node controlling many mesh identities could delay conflict
-  detection by selectively refusing to relay/merge. Mitigations
-  (reputation scoring, relay diversity requirements) are future work.
+- **Sybil resistance at the mesh relay layer** was originally unaddressed
+  in this design; Section 8 below now specifies and implements a bootstrap-
+  anchored identity + relay-diversity mitigation, closing this gap.
 - **Real device-to-device transport** (actual Bluetooth/WiFi Direct) is
   not yet implemented; the simulator models this abstractly.
 - **LLM risk scoring is advisory-only by design** (Section 4.3) -- this
@@ -174,3 +173,72 @@ a fully local (no-cloud) ML risk-scoring layer, evaluated via mesh
 simulation -- a combination we have not found precedented in existing
 literature as of this writing (worth a proper literature search before
 final submission, this is a starting position not a verified novelty claim).
+
+## 8. Sybil-Resistance at the Mesh Relay Layer
+
+Section 6 originally flagged Sybil resistance as unaddressed: a malicious
+actor controlling many fake mesh identities could delay conflict detection
+by selectively refusing to relay/merge, or present a false consensus to
+isolate a victim device. We address this directly, using a design grounded
+in ROTM's actual deployment assumption rather than a generic blockchain-
+style solution -- Proof-of-Work/Stake are both a poor fit for low-power
+phones operating offline.
+
+### 8.1 Why generic Sybil-resistance schemes don't fit ROTM
+
+Resource-based schemes (PoW, PoS) require spare compute or capital stake --
+both antithetical to a system designed for low-end, possibly disaster-
+affected devices. Pure reputation systems (e.g., ReCon [Biryukov & Feher,
+2019]) are effective in open, permissionless networks, but ROTM's actual
+deployment model is closer to RBI's own e-Rupee pilot: wallets are
+provisioned through a KYC'd banking relationship (Section 3), not created
+freely by anonymous actors. ROTM is therefore a **permissioned-identity,
+permissionless-relay** system -- a distinction that permits a lighter-weight
+mechanism than fully open networks require.
+
+### 8.2 Design: bootstrap-anchored identity + relay diversity requirement
+
+**Identity layer (Sybil-resistant by construction).** Because wallet
+creation requires a bank-issued credential (mirroring RBI e-Rupee's
+onboarding), an attacker cannot cheaply mint unlimited wallet identities
+the way they could in an open blockchain network -- the same assumption
+RBI's own offline pilot relies on, made explicit here rather than left
+implicit as in our original design.
+
+**Relay layer (the actual open question).** Sybil risk in ROTM concerns
+fake *relay nodes*, not fake *wallets* -- a malicious device pretending to
+be many mesh participants to selectively suppress conflict-relevant
+transaction relay. We mitigate this with three mechanisms:
+
+1. **Relay diversity requirement.** A ledger only treats a conflict as
+   "not yet detected" (rather than "actively suppressed") if it has synced
+   with at least `k` distinct relay identities (k=3 in simulation, tunable)
+   since the conflicting transaction was created. Below this threshold,
+   the wallet surfaces a "limited sync diversity" warning rather than
+   false confidence in a clean state.
+2. **Relay reputation decay.** Each node tracks a lightweight reputation
+   score per peer, incremented on successful conflict-free syncs and
+   sharply decremented if a peer is later found to have withheld a
+   transaction it should have relayed (detectable retrospectively once a
+   conflict surfaces via a third path). Low-reputation relays are
+   deprioritized for future syncs but never fully blocked, preserving
+   availability during genuine connectivity scarcity.
+3. **Bounded trust amplification.** No single relay identity's reputation
+   can contribute more than a fixed fraction (20%, following the
+   "multiple-path response bound" principle from Stannat's Sybil-proof
+   reputation analysis [AAMAS 2021]) to a device's overall trust in network
+   state -- capping the damage even a highly-reputable-seeming Sybil
+   cluster can cause.
+
+### 8.3 What this does and does not achieve
+
+This mechanism does **not** make Sybil attacks impossible -- no lightweight
+scheme can, without resource cost or external identity verification. It
+**does** bound the damage a relay-layer Sybil attacker can cause to
+"delay detection, with a visible warning," rather than "silently and
+indefinitely suppress detection" -- a meaningful, honestly-scoped
+improvement consistent with ROTM's overall bounded-exposure philosophy
+(Section 2). Implementation lives in `sync/ledger.py` (relay diversity
+tracking, reputation decay) and `sync/mesh_simulator.py` (adversarial
+relay-withholding simulation), with results in
+`results/week5_sybil_resistance.md`.
