@@ -207,6 +207,16 @@ class Wallet(
                 return false
             }
         }
+
+        /**
+         * Factory method to load a Wallet instance directly from a saved state file.
+         * Corresponds to Python `Wallet.from_state_file()`.
+         */
+        fun fromStateFile(filepath: String): Wallet {
+            val wallet = Wallet()
+            wallet.loadState(filepath)
+            return wallet
+        }
     }
 
     /**
@@ -252,18 +262,6 @@ class Wallet(
         nonce = state.nonce
         offlineSpentPaise = state.offlineSpentPaise
         outbox = state.outbox.toMutableList()
-    }
-
-    /**
-     * Factory method to load a Wallet instance directly from a saved state file.
-     * Corresponds to Python `Wallet.from_state_file()`.
-     */
-    companion object {
-        fun fromStateFile(filepath: String): Wallet {
-            val wallet = Wallet()
-            wallet.loadState(filepath)
-            return wallet
-        }
     }
 }
 
