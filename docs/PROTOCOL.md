@@ -173,17 +173,7 @@ a fully local (no-cloud) ML risk-scoring layer, evaluated via mesh
 simulation -- a combination we have not found precedented in existing
 literature as of this writing (worth a proper literature search before
 final submission, this is a starting position not a verified novelty claim).
-
 ## 8. Sybil-Resistance at the Mesh Relay Layer
-
-Section 6 originally flagged Sybil resistance as unaddressed: a malicious
-actor controlling many fake mesh identities could delay conflict detection
-by selectively refusing to relay/merge, or present a false consensus to
-isolate a victim device. We address this directly, using a design grounded
-in ROTM's actual deployment assumption rather than a generic blockchain-
-style solution -- Proof-of-Work/Stake are both a poor fit for low-power
-phones operating offline.
-
 ### 8.1 Why generic Sybil-resistance schemes don't fit ROTM
 
 Resource-based schemes (PoW, PoS) require spare compute or capital stake --
@@ -242,3 +232,69 @@ improvement consistent with ROTM's overall bounded-exposure philosophy
 tracking, reputation decay) and `sync/mesh_simulator.py` (adversarial
 relay-withholding simulation), with results in
 `results/week5_sybil_resistance.md`.
+
+
+## 9. Bounded Multi-Hop Relay Propagation
+
+### 9.1 An unintended discovery
+`merge()` (Section 4.2) combines a peer's *entire* ledger history, not just
+transactions that peer created. This means transaction propagation through
+intermediate devices already happens implicitly -- if Bob meets Alice, then
+later meets Carol, Carol receives Alice's transactions even though Alice
+and Carol never met. This is a real capability (delay-tolerant "epidemic
+routing", well-studied in DTN literature -- Section 8), but it was not a
+deliberate design choice, and it has an unaddressed cost: **unbounded
+propagation**. Nothing currently stops a transaction from spreading
+indefinitely, meaning every relay node accumulates a permanently-growing
+copy of transaction history for wallets it may have no relationship with --
+unrealistic for storage-constrained phones, and a real, if minor, privacy
+concern (a relay node ends up holding a durable record of strangers'
+financial activity it had no reason to keep).
+
+### 9.2 Design: hop-bounded, path-aware relay
+We introduce two changes to `LedgerEntry` and `merge()`:
+
+1. **`max_relay_hops` (default 5, tunable).** Each transaction carries a
+   hop-count that increments on every relay (already tracked as
+   `hop_count` for detection-latency measurement, Section 5.2 -- we now
+   also use it as a hard propagation limit). A transaction is not
+   re-relayed past `max_relay_hops`; it is presumed to have either reached
+   a device that will sync to a server, or become irrelevant to further
+   spread. This bounds storage growth at any single relay to a function of
+   local transaction rate, not global network size.
+2. **Relay path tracking (not just relay count).** Each `LedgerEntry`
+   tracks the ordered list of relay identities it passed through (bounded
+   by `max_relay_hops`, so this list is small). This upgrades Section 8's
+   relay-diversity check from "how many *distinct* relays have I heard
+   this from" to "how many *disjoint paths*" -- a stronger Sybil-resistance
+   property, since a single attacker controlling multiple relay identities
+   on the *same* physical path no longer counts as diverse.
+
+### 9.3 What this predicts, and what we measure
+With bounded hops, delivery to a specific device that never meets the
+sender directly becomes *probabilistic*, not guaranteed -- a genuinely
+measurable DTN-style metric. We extend `mesh_simulator.py` with
+`run_multihop_delivery_simulation()`, reporting: (a) **delivery ratio** --
+fraction of transactions that reach a randomly-designated "target" device
+within `max_relay_hops`, and (b) **delivery latency** -- mesh-time steps
+until first delivery, for successful deliveries. This is a real,
+previously-unmeasured property of ROTM's mesh layer, not present in
+Section 5's evaluation (which only measured double-spend detection
+between directly-conflicting parties, not general message reachability).
+
+### 9.4 Honest scope
+This is store-and-forward routing, not a routing *protocol* in the sense
+of choosing good relay paths (e.g., no attempt to route toward a device
+likely to encounter the target soon, as more sophisticated DTN routing
+schemes like PRoPHET do). We use pure epidemic (flood-until-hop-limit)
+propagation, the simplest correct baseline -- a reasonable target for a
+future improvement, not claimed as solved here.
+
+Section 6 originally flagged Sybil resistance as unaddressed: a malicious
+actor controlling many fake mesh identities could delay conflict detection
+by selectively refusing to relay/merge, or present a false consensus to
+isolate a victim device. We address this directly, using a design grounded
+in ROTM's actual deployment assumption rather than a generic blockchain-
+style solution -- Proof-of-Work/Stake are both a poor fit for low-power
+phones operating offline.
+
