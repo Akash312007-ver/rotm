@@ -1,4 +1,0 @@
-python -c "from sync.mesh_simulator import run_sybil_resistance_sweep; run_sybil_resistance_sweep()"
-python tests/test_core.py
-python tests/test_transport.py
-python tests/test_sybil_resistance.py
