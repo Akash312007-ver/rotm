@@ -15,7 +15,6 @@ data class Transaction(
     val nonce: String,
     var signature: String = ""
 ) {
-    /** Deterministic message bytes used for signing/verifying (excludes signature itself). */
     fun signingPayload(): ByteArray {
         val raw = "$txId|$senderPublicKey|$receiverPublicKey|$amount|$timestamp|$nonce"
         return raw.toByteArray(Charsets.UTF_8)
@@ -41,16 +40,13 @@ data class Transaction(
 
 /**
  * Double-spend detection - mirrors the Python ROTM double-spend module.
- * Tracks seen tx IDs and per-sender nonces to catch replay/double-spend attempts
- * in an offline-first, eventually-synced mesh.
+ * Persists seen tx IDs/nonces to disk so restarting the app doesn't reset memory.
  */
 object DoubleSpendGuard {
 
-    // txId -> Transaction, all transactions this device has seen/relayed
     private val seenTransactions = ConcurrentHashMap<String, Transaction>()
-
-    // senderPublicKey -> set of nonces already used by that sender
     private val usedNonces = ConcurrentHashMap<String, MutableSet<String>>()
+    private var prefs: android.content.SharedPreferences? = null
 
     sealed class CheckResult {
         object Accepted : CheckResult()
@@ -59,41 +55,54 @@ object DoubleSpendGuard {
         object InvalidSignature : CheckResult()
     }
 
-    /**
-     * Validates and registers a transaction. Returns why it was accepted/rejected.
-     * Thread-safe: important since BLE transport may deliver from multiple peers concurrently.
-     */
+    fun init(context: android.content.Context) {
+        prefs = context.getSharedPreferences("rotm_doublespend_ledger", android.content.Context.MODE_PRIVATE)
+        val savedIds = prefs?.getStringSet("seen_tx_ids", emptySet()) ?: emptySet()
+        for (id in savedIds) {
+            val sender = prefs?.getString("sender_for_$id", null) ?: continue
+            val nonce = prefs?.getString("nonce_for_$id", null) ?: continue
+            usedNonces.getOrPut(sender) { mutableSetOf() }.add(nonce)
+            seenTransactions[id] = Transaction(id, sender, "", 0.0, 0L, nonce)
+        }
+    }
+
     @Synchronized
     fun check(tx: Transaction): CheckResult {
         if (!tx.isSignatureValid()) {
             return CheckResult.InvalidSignature
         }
-
         if (seenTransactions.containsKey(tx.txId)) {
             return CheckResult.DuplicateTxId
         }
-
         val senderNonces = usedNonces.getOrPut(tx.senderPublicKey) { mutableSetOf() }
         if (senderNonces.contains(tx.nonce)) {
             return CheckResult.NonceReused
         }
 
-        // Accept: record it
         seenTransactions[tx.txId] = tx
         senderNonces.add(tx.nonce)
+        persist(tx)
         return CheckResult.Accepted
     }
 
+    private fun persist(tx: Transaction) {
+        val p = prefs ?: return
+        val current = p.getStringSet("seen_tx_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+        current.add(tx.txId)
+        p.edit()
+            .putStringSet("seen_tx_ids", current)
+            .putString("sender_for_${tx.txId}", tx.senderPublicKey)
+            .putString("nonce_for_${tx.txId}", tx.nonce)
+            .apply()
+    }
+
     fun getTransaction(txId: String): Transaction? = seenTransactions[txId]
-
     fun allTransactions(): List<Transaction> = seenTransactions.values.toList()
-
-    /** For syncing with peers / merging mesh state after reconnect. */
     fun mergeKnownTransaction(tx: Transaction): CheckResult = check(tx)
 
     fun clear() {
         seenTransactions.clear()
         usedNonces.clear()
+        prefs?.edit()?.clear()?.apply()
     }
 }
-

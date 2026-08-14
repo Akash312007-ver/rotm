@@ -9,6 +9,8 @@ class MeshManager(private val context: Context) {
 
     private val TAG = "ROTM_MESH"
 
+    init { DoubleSpendGuard.init(context) }
+
     var myKeyPair: Crypto.KeyPair? = null
         private set
 
@@ -17,7 +19,6 @@ class MeshManager(private val context: Context) {
     private val gattServer = GattServerManager(context, this)
     private val gattClient = GattClientManager(context)
 
-    /** Loads existing wallet from secure storage, or creates + saves a new one if none exists. */
     fun initWallet(): Crypto.KeyPair {
         val existing = WalletStore.loadWallet(context)
         if (existing != null) {
